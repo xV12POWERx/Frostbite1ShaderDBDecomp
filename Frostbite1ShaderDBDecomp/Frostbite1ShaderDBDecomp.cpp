@@ -12,11 +12,6 @@
 #include <iostream>
 
 
-
-#define RIGID_MESH 0
-#define SKINNED_MESH 1 
-#define COMPOSITE_MESH 2
-#define TREE_MESH 4
 #define GUIDSIZETEXT 36
 #define SHADERCONSTANTDATASIZE 32
 #define SOLUTIONSIZE 48
@@ -332,11 +327,11 @@ int main()
 	if (crawlResources)
 	{
 		char temp[512] = { 0 };
-		std::cout << "TYPE EDITOR FOLDER PATH WITH A SLASH AT THE END (/)" << std::endl; 
+		std::cout << "TYPE EDITOR FOLDER PATH WITH A SLASH AT THE END (/). EXAMPLE: C:\\your\\path\\" << std::endl; 
 		std::cin >> std::setw(sizeof(temp) - 1) >> temp;
 		filepath_slash_swap(temp);
 		to_lower_inplace(temp); 
-		snprintf(resourcesPath, sizeof(resourcesPath) - 1, "%sresources/", temp);
+		snprintf(resourcesPath, sizeof(resourcesPath) - 1, "%s/", temp);
 		snprintf(startupPath, sizeof(startupPath) - 1, "%sasync/", temp);
 	}
 
@@ -401,9 +396,10 @@ int main()
 		}
 		
 	}
+	
 	if (PathFileExistsA("./editor/resources/levels/") == FALSE)
 	{
-		std::cout << "TYPE SHADER DATABASE PATH (WITH A FORWARD SLASH AT THE END) - THE PROGRAM WILL SEARCH FOR ANY SHADERDATABASE FILE IN THIS PATH" << std::endl;
+		std::cout << "TYPE SHADER DATABASE PATH (WITH A FORWARD SLASH AT THE END) - THE PROGRAM WILL SEARCH FOR ANY SHADERDATABASE FILE IN THIS PATH. EXAMPLE: C:\\your\\path\\" << std::endl;
 		std::cin >> std::setw(sizeof(levelsPath) - 1) >> levelsPath; 
 	}
 	else strncpy(levelsPath, levelsPathDefault, sizeof(levelsPath) - 1); 
@@ -443,7 +439,7 @@ int main()
 	std::cout << "SHADER CONSTANTS BLOCKS: " << gShaderConstants.size() << std::endl;
 	std::cout << "TOTAL SHADERS: " << gShaders.size() << std::endl;
 
-	std::cout << "TYPE OUTPUT PATH WITH A SLASH AT THE END (/)" << std::endl;
+	std::cout << "TYPE OUTPUT PATH WITH A SLASH AT THE END (/). EXAMPLE: C:\\your\\path\\" << std::endl;
 	std::cin >> std::setw(sizeof(outputPath) - 1) >> outputPath;
 	gOutputPath = outputPath;
 
@@ -577,8 +573,15 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 		else
 		{
 			FragmentShaderStruct* fragment = (FragmentShaderStruct*)it2->second; 
-			char* pGuid = fileBuffer + strlen(fileBuffer) + 1;
-			fb_array_add(&fragment->availableIds, (void*)pGuid);
+			char* pGuid = fileBuffer + strlen(fileBuffer) + 1;	
+			for (int j = 0; j < fb_array_size(&fragment->availableIds); j++)
+			{
+				u8* pGuidToCompare = (u8*)fb_array_get(&fragment->availableIds, j); 
+				if (memcmp(pGuid, pGuidToCompare, 16) != 0)
+				{
+					fb_array_add(&fragment->availableIds, (void*)pGuid);
+				}
+			}
 		}
 		fileBuffer += strlen(fileBuffer) + 1;
 		fileBuffer += 16;
@@ -2010,6 +2013,7 @@ tinyxml2::XMLElement* XmlGetPrimaryInstance(tinyxml2::XMLDocument* doc)
 	char lowercaseTempGuid[GUIDSIZETEXT + 2] = { 0 };
 	tinyxml2::XMLElement* partition = doc->FirstChildElement();
 	tinyxml2::XMLElement* instance = NULL;
+	if (strcmp(partition->Value(), "partition") != 0) return NULL; 
 	const char* primaryInstance = partition->FirstAttribute()->Next()->Value();
 	memcpy(lowercaseTargetGuid, primaryInstance, GUIDSIZETEXT);
 	to_lower_inplace(lowercaseTargetGuid);
