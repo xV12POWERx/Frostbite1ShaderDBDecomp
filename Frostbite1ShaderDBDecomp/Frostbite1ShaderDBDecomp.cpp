@@ -11,7 +11,10 @@
 #include <filesystem>
 #include <iostream>
 
-
+#define RIGID_MESH 0
+#define SKINNED_MESH 1 
+#define COMPOSITE_MESH 2
+#define TREE_MESH 4
 #define GUIDSIZETEXT 36
 #define SHADERCONSTANTDATASIZE 32
 #define SOLUTIONSIZE 48
@@ -30,6 +33,9 @@ void bundle_directory_test(char* dst_path);
 void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*>* gShaderMap, rbtree* geometryDeclarationsMap, rbtree* gShadersGuidToNameMap);
 void LinkShaderToSolutions(ShaderStruct* target, void* solutionsBlockStart, void* targetShaderRefBlock);
 void LinkSolutionToData(ShaderSolution* solution, void* ShaderConstantBlockStart, void* VertexShadersBlockStart, void* PixelShaderBlockStart, void* ShaderConstantFunctionBlockStart, void* ShaderTextureFunctionBlockStart);
+
+
+void GetMeshTokenFromMeshSet(const char* rsrcPath, const char* filePath); 
 
 char* ShaderConstantBlockBypassOnly(void* dbFileBuffer);
 ShaderConstants* ShaderConstantBlockGet(void* dbFileBuffer, i32 index);
@@ -60,6 +66,7 @@ void GeometryDeclarationSerializeXml(rbtree* geometryDeclMap);
 void VertexShadersSerializeToFiles(rbtree* Dx11VertexPermutationsMap); 
 void PixelShadersSerializeToFiles(rbtree* Dx11PixelPermutationsMap); 
 void FragmentShadersSerializeXml(std::map<u32, FragmentShaderStruct*>* gFragmentShadersMap); 
+
 
 
 
@@ -289,6 +296,12 @@ std::map<u32, char*> shadersGatheredFromResourcesMap;
 // crawlerV2 uses this
 std::map<u32, char*> meshTokensFromGameDump;
 
+// for debugging
+std::map<u32, char*> gMeshNodesMap; 
+FILE* gFragmentShadersTxt = NULL;
+FILE* gUnreferencedMeshNodesTxt = NULL;
+FILE* gShadersNonShaderString = NULL; 
+//
 
 mm_manager* gMemoryManager = NULL;
 
@@ -320,7 +333,15 @@ int main()
 	rbtree* gShadersGuidToNameMap = rb_create(compare_func, destroy_func);
 	gVertexShaderPermutations = rb_create(compare_func, destroy_func);
 	gPixelShaderPermutations = rb_create(compare_func, destroy_func);
-
+	// for debugging
+	bundle_directory_test(const_cast<char*>("./debug/"));
+	FILE* fragmentShadersTxt = fopen("./debug/fragmentShadersList.txt", "w"); 
+	FILE* unreferencedMeshNodesTxt = fopen("./debug/unreferencedMeshNodes.txt", "w");
+	FILE* shadersNonShaderString = fopen("./debug/shadersNonShaders.txt", "w");
+	gFragmentShadersTxt = fragmentShadersTxt; 
+	gUnreferencedMeshNodesTxt = unreferencedMeshNodesTxt;
+	gShadersNonShaderString = shadersNonShaderString; 
+	//
 	bool crawlResources = FALSE; 
 	std::cout << "DO YOU WANT TO CRAWL ALL RESOURCES FOR MORE ACCURATE DECOMPILATION? no = 0, yes = 1" << std::endl; 
 	std::cin >> crawlResources; 
@@ -372,21 +393,28 @@ int main()
 							to_lower_inplace(lowercaseClassName);
 							if (strstr(lowercaseClassName, "meshasset"))
 							{
+								std::map<u32, char*>::iterator it; 
 								char lowercaseToken[256] = { 0 };
 								char* realToken = (char*)memoryManager->allocate(MEMPAGE, sizeof(lowercaseToken)); 
-								tinyxml2::XMLElement* baseName = XmlInstanceGetVarByName(primaryInstance, "name");
-
-								std::cout << "MESH ASSET TOKEN FOUND: " << baseName->GetText() << std::endl; 
-
+								tinyxml2::XMLElement* baseName = XmlInstanceGetVarByName(primaryInstance, "name");					
 								snprintf(lowercaseToken, sizeof(lowercaseToken) - 1, "%s/", baseName->GetText());
 								snprintf(realToken, sizeof(lowercaseToken) - 1, "%s/", baseName->GetText());
 								to_lower_inplace(lowercaseToken);
-								meshTokensFromGameDump.insert({ bc2_hasher(lowercaseToken),realToken }); 
+								u32 hash = bc2_hasher(lowercaseToken);
+								it = meshTokensFromGameDump.find(hash);
+								if (it == meshTokensFromGameDump.end())
+								{
+									std::cout << "MESH ASSET TOKEN FOUND: " << baseName->GetText() << std::endl;
+									meshTokensFromGameDump.insert({ hash,realToken });
+								}
 							}
 						}
 					}
 				}
-
+				else if (strstr(lowercaseFile, "meshset"))
+				{
+					GetMeshTokenFromMeshSet(resourcesPath, lowercaseFile); 
+				}
 			}
 		}
 		std::cout << "MESH TOKENS GATHERED FROM RESOURCES: " << meshTokensFromGameDump.size() << std::endl;
@@ -458,9 +486,94 @@ int main()
 		bundle_directory_test(fullPath);
 		ShaderSerializeXml(fullPath, shader, TRUE);
 	}
+	fclose(fragmentShadersTxt); 
+	fclose(unreferencedMeshNodesTxt); 
+	fclose(shadersNonShaderString); 
     return 0; 
 }
 
+
+
+void GetMeshTokenFromMeshSet(const char* rsrcPath, const char* filePath)
+{
+	static mm_manager* memoryManager = get_memory_manager(); 
+	char fullPath[512] = { 0 };
+	i8 meshType = -1; 
+	if (strstr(filePath, ".compositemeshset")) meshType = COMPOSITE_MESH; 
+	else if (strstr(filePath, ".rigidmeshset")) meshType = RIGID_MESH;
+	else if (strstr(filePath, ".treemeshset")) meshType = TREE_MESH;
+	else if (strstr(filePath, ".skinnedmeshset")) meshType = SKINNED_MESH;
+	if (meshType == -1) return; 
+	snprintf(fullPath, sizeof(fullPath) - 1, "%s%s", rsrcPath, filePath); 
+	void* fileBuffer = malloc(MEGABYTE * 5);
+	FILE* meshsetFile = fopen(fullPath, "r+b");
+	if (meshsetFile == NULL) __debugbreak();
+	fseek(meshsetFile, 0, SEEK_END);
+	u32 filesize = ftell(meshsetFile);
+	fseek(meshsetFile, 0, SEEK_SET);
+	fread(fileBuffer, 1, filesize, meshsetFile);
+	fclose(meshsetFile);
+	bool carry = FALSE; 
+	char* runner = (char*)fileBuffer;
+	runner += 5;
+	char* lod_settings_fp = runner;
+	runner += strlen(runner) + 1;
+	i32 n_lods = (u32)*runner;
+	runner += sizeof(u32);
+	i8 unknown = -1; 
+	i8 n_shaders_per_set = -1; 
+	i8 n_shader_sets = -1;
+//	for (int i = 0; i < n_lods; i++)
+	for (int i = 0; i < 1; i++)
+	{
+		unknown = *runner;
+		n_shaders_per_set = *(runner + 1);
+		n_shader_sets = *(runner + 2);
+		runner += 3;
+		for (int j = 0; j < n_shader_sets; j++) // shader set level. this is the same for all mesh sets
+		{
+			std::map<u32, char*>::iterator it; 
+			char lowercaseMeshPath[384] = { 0 };
+			char nameNoSlash[384] = { 0 };
+			u32 meshpathlen = 0;
+			if (*runner)
+			{
+				char* meshpath = (char*)memoryManager->allocate(MEMPAGE, sizeof(lowercaseMeshPath));
+				char* meshToken = runner;
+				char* slash = strstr(runner, "/");
+				char* guid = slash++;
+				while (slash)
+				{
+					slash++;
+					guid = slash;
+					slash = strstr(slash, "/");
+				}
+				meshpathlen = guid - runner;
+				strncpy(meshpath, runner, meshpathlen);
+				strncpy(nameNoSlash, runner, meshpathlen-1);
+				strncpy(lowercaseMeshPath, meshpath, sizeof(lowercaseMeshPath) - 1);
+				to_lower_inplace(lowercaseMeshPath);
+				u32 hash = bc2_hasher(lowercaseMeshPath); 
+				it = meshTokensFromGameDump.find(hash); 
+				if (it == meshTokensFromGameDump.end())
+				{
+					std::cout << "MESH ASSET TOKEN FOUND: " << nameNoSlash << std::endl;
+					meshTokensFromGameDump.insert({ hash,meshpath });
+				}
+				goto fuckOff;
+				runner += strlen(runner) + 1;
+			}
+			else
+			{
+				carry = true;
+				runner++;
+			}
+		}
+	}
+	fuckOff: 
+	free(fileBuffer);
+	return; 
+}
 
 void RBTreeGetPointers(rbtree* rbt, rbnode* n, std::vector<void*>* dst)
 {
@@ -487,6 +600,21 @@ const char* MeshTokenFromShaderToken(const char* shaderTokenLowercase)
 	return NULL; 
 }
 
+const char* MeshTokenFromMeshNodeToken(const char* shaderTokenLowercase)
+{
+	std::map<u32, char*>::iterator it;
+	for (it = meshTokensFromGameDump.begin(); it != meshTokensFromGameDump.end(); it++)
+	{
+		char lowercaseToken[256] = { 0 };
+		strncpy(lowercaseToken, it->second, strlen(it->second)-1);
+		to_lower_inplace(lowercaseToken);
+		if (strstr(shaderTokenLowercase, lowercaseToken)) return it->second;
+	}
+	return NULL;
+}
+
+
+
 
 /* gShaderMap holds the shader struct with the real token. example: 
 * full shader token from database: Objects/Weapons/Handheld/BU_rif_F2000/BU_rif_F2000_Mesh3p/Objects/Weapons/Handheld/BU_rif_F2000/Shaders/LOD2_Metal
@@ -511,10 +639,10 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 	fileBuffer += 4;
 	std::map<u32, ShaderStruct*>::iterator it;
 	std::map<u32, FragmentShaderStruct*>::iterator it2; 
+	std::map<u32, char*>::iterator it3;
 
 	for (int i = 0; i < *nShaders; i++)
 	{
-		bool exists = FALSE; 
 		char lowercaseName[512] = { 0 };
 		char resultName[sizeof(lowercaseName)] = { 0 }; 
 		char resultNameOriginal[sizeof(lowercaseName)] = { 0 }; 
@@ -530,6 +658,11 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 		it = gShaderMap->find(hash);
 		if (it == gShaderMap->end())
 		{
+			// debugging 
+	/*		if (strstr(lowercaseName, "shaders/") == NULL)
+			{
+				fprintf(gShadersNonShaderString, "%s\n", resultNameOriginal);
+			}*/
 			ShaderStruct* shader = (ShaderStruct*)memoryManager->allocate(MEMPAGE, sizeof(ShaderStruct));
 			shader->name = (char*)memoryManager->allocate(MEMPAGE, sizeof(lowercaseName));
 			strncpy(shader->name, resultNameOriginal, sizeof(lowercaseName));
@@ -561,7 +694,7 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 		to_lower_inplace(lowercaseName);
 		it2 = gFragmentShadersMap.find(bc2_hasher(lowercaseName));
 		if (it2 == gFragmentShadersMap.end())
-		{
+		{	
 			FragmentShaderStruct* fragment = (FragmentShaderStruct*)memoryManager->allocate(MEMPAGE, sizeof(FragmentShaderStruct));
 			fragment->name = (char*)memoryManager->allocate(MEMPAGE, sizeof(lowercaseName));
 			strncpy(fragment->name, fileBuffer, sizeof(lowercaseName) - 1);
@@ -569,6 +702,7 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 			fb_array_init(&fragment->availableIds, MEMPAGE, 24, 16);
 			fb_array_add(&fragment->availableIds, (void*)pGuid);
 			gFragmentShadersMap.insert({ bc2_hasher(lowercaseName), fragment });
+			if (gFragmentShadersTxt) fprintf(gFragmentShadersTxt, "%s\n", fragment->name);
 		}
 		else
 		{
@@ -590,6 +724,31 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 	fileBuffer += 4;
 	for (int i = 0; i < *nMeshNodes; i++)
 	{
+
+		/* THIS IS JUST FOR DEBUGGING. ENABLING THIS DUMP WILL MAKE THE SCRIPT TAKE 7x LONGER. AND ITS REALLY UNNECESSARY
+		char lowercaseName[512] = { 0 };
+		char resultName[sizeof(lowercaseName)] = { 0 };
+		char resultNameOriginal[sizeof(lowercaseName)] = { 0 };
+		strncpy(lowercaseName, fileBuffer, sizeof(lowercaseName) - 1);
+		to_lower_inplace(lowercaseName);
+		const char* isCompoundPath = MeshTokenFromMeshNodeToken(lowercaseName);
+		i32 meshTokenLen = 0;
+		i32 offset = 0; 
+		if (isCompoundPath)
+		{
+			meshTokenLen = strlen(isCompoundPath);
+			offset = 5;
+		}
+		snprintf(resultName, sizeof(resultName) - 1, "%s", fileBuffer + meshTokenLen + offset);
+		memcpy(resultNameOriginal, resultName, sizeof(lowercaseName));
+		to_lower_inplace(resultName);
+		u32 hash = bc2_hasher(resultName);
+		it3 = gMeshNodesMap.find(hash);
+		if (it3 == gMeshNodesMap.end())
+		{
+			gMeshNodesMap.insert({ hash,resultNameOriginal });
+			if (isCompoundPath == NULL) fprintf(gUnreferencedMeshNodesTxt, "%s\n", resultNameOriginal); 
+		}*/
 
 		fileBuffer += strlen(fileBuffer) + 1;
 		fileBuffer += 16;
