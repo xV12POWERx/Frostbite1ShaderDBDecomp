@@ -69,7 +69,8 @@ void FragmentShadersSerializeXml(std::map<u32, FragmentShaderStruct*>* gFragment
 
 
 
-
+u32 modulePathLen = 0; 
+char exePath[512] = { 0 };
 const char* shadersPath = "./editor/shaders/"; 
 const char* levelsPathDefault = "./editor/resources/levels/";
 const char* resourcesPathDefault = "./editor/resources/";
@@ -325,10 +326,13 @@ int main()
 	char resourcesPath[512] = { 0 };
 	char startupPath[512] = { 0 };
 	char outputPath[512] = { 0 };
+
 	std::map<u32, ShaderStruct*> gShaders;
 	std::map<u32, ShaderStruct*>::iterator it;
 	std::map<u32, char*>::iterator it2; 
 
+	GetModuleFileNameA(NULL, exePath, sizeof(exePath) - 1);
+	modulePathLen = strlen(exePath); 
 	rbtree* geometryDeclarationsMap = rb_create(compare_func, destroy_func);
 	rbtree* gShadersGuidToNameMap = rb_create(compare_func, destroy_func);
 	gVertexShaderPermutations = rb_create(compare_func, destroy_func);
@@ -467,7 +471,7 @@ int main()
 	std::cout << "SHADER CONSTANTS BLOCKS: " << gShaderConstants.size() << std::endl;
 	std::cout << "TOTAL SHADERS: " << gShaders.size() << std::endl;
 
-	std::cout << "TYPE OUTPUT PATH WITH A SLASH AT THE END (/). EXAMPLE: C:\\your\\path\\" << std::endl;
+	std::cout << "TYPE OUTPUT PATH WITH A SLASH AT THE END (/). EXAMPLE: C:\\your\\path\\. MUST BE ABSOLUTE PATH - NO ./ PREFIX " << std::endl;
 	std::cin >> std::setw(sizeof(outputPath) - 1) >> outputPath;
 	gOutputPath = outputPath;
 
@@ -659,10 +663,10 @@ void UpdateDatabaseFromRawFileV2(void* dbFileBuffer, std::map<u32, ShaderStruct*
 		if (it == gShaderMap->end())
 		{
 			// debugging 
-	/*		if (strstr(lowercaseName, "shaders/") == NULL)
+			if (isCompoundPath == NULL)
 			{
 				fprintf(gShadersNonShaderString, "%s\n", resultNameOriginal);
-			}*/
+			}
 			ShaderStruct* shader = (ShaderStruct*)memoryManager->allocate(MEMPAGE, sizeof(ShaderStruct));
 			shader->name = (char*)memoryManager->allocate(MEMPAGE, sizeof(lowercaseName));
 			strncpy(shader->name, resultNameOriginal, sizeof(lowercaseName));
@@ -1303,6 +1307,16 @@ void filepath_slash_swap(char* src)
 	}
 }
 
+void filepath_slash_swap_to_backslash(char* src)
+{
+	char* backslash = strstr(src, "/");
+	while (backslash)
+	{
+		*backslash = '\\';
+		backslash++;
+		backslash = strstr(backslash, "/");
+	}
+}
 
 void PrintGuid(u8* pGuid)
 {
@@ -1341,9 +1355,21 @@ void bundle_directory_test(char* dst_path)
 	for (int i = 0; i < slashcount; i++)
 	{
 		strncpy(temp, dst_path, (directories[i] - dst_path));
+		i32 fuck = strlen(temp);
+		if (fuck + 2 + modulePathLen >= MAX_PATH)
+		{
+			snprintf(temp, sizeof(temp) - 1, "\\\\?\\"); 
+			strncpy(temp + strlen(temp), dst_path, (directories[i] - dst_path));
+			filepath_slash_swap_to_backslash(temp);
+		}
 		if (!PathFileExistsA(temp))
 		{
-			CreateDirectoryA(temp, NULL);
+			bool result = CreateDirectoryA(temp, NULL);
+			if (result == FALSE) 
+			{
+				u32 error = GetLastError();
+		//		__debugbreak();
+			}
 		}
 	}
 	return;
@@ -1352,6 +1378,9 @@ void bundle_directory_test(char* dst_path)
 // look at this repetitive boilerplate lazy garbage lmfao 
 int ShaderSerializeXml(const char* savePath, ShaderStruct* shader, bool isOriginal)
 {
+	char fixedPath[1024] = { 0 };
+	snprintf(fixedPath, sizeof(fixedPath) - 1, "\\\\?\\%s", savePath);
+	filepath_slash_swap_to_backslash(fixedPath); 
 	char shaderGuid[GUIDSIZETEXT + 2] = { 0 };
 	tinyxml2::XMLDocument tempDoc;
 	tinyxml2::XMLDeclaration* decl = tempDoc.NewDeclaration("xml version=\"1.0\"");
@@ -1555,7 +1584,7 @@ int ShaderSerializeXml(const char* savePath, ShaderStruct* shader, bool isOrigin
 	shaderLevel->InsertEndChild(varLevel);
 	tempDoc.InsertFirstChild(decl);
 	tempDoc.InsertAfterChild(decl, shaderLevel);
-	tempDoc.SaveFile(savePath);
+	tempDoc.SaveFile(fixedPath);
 	return OK;
 }
 
@@ -1812,6 +1841,11 @@ void ShaderConstantSerializeXml(tinyxml2::XMLDocument* doc, tinyxml2::XMLElement
 			varLevel->SetText(shaderConstants->externalValueConstants[i].required);
 			level->InsertEndChild(varLevel);
 
+			varLevel = doc->NewElement("var");
+			varLevel->SetAttribute("name", "Handle");
+			varLevel->SetText(shaderConstants->externalValueConstants[i].handle);
+			level->InsertEndChild(varLevel);
+
 			snprintf(defaultValue, sizeof(defaultValue) - 1, "%f/%f/%f/%f", shaderConstants->externalValueConstants[i].defaultValue[0], shaderConstants->externalValueConstants[i].defaultValue[1],
 				shaderConstants->externalValueConstants[i].defaultValue[2], shaderConstants->externalValueConstants[i].defaultValue[3]);
 
@@ -1852,6 +1886,12 @@ void ShaderConstantSerializeXml(tinyxml2::XMLDocument* doc, tinyxml2::XMLElement
 			varLevel->SetAttribute("name", "Type");
 			varLevel->SetText(shaderConstants->externalTextureConstants[i].type);
 			level->InsertEndChild(varLevel);
+
+			varLevel = doc->NewElement("var");
+			varLevel->SetAttribute("name", "Handle");
+			varLevel->SetText(shaderConstants->externalTextureConstants[i].handle);
+			level->InsertEndChild(varLevel);
+
 
 			Block->InsertEndChild(level);
 		}
